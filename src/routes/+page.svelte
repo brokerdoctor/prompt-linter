@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { compile, type CompilePass } from '$lib/compiler.js';
   import { lint, type LintReport } from '$lib/linter.js';
+  import type { CompilePass } from '$lib/compiler.js';
 
   // ── state ──────────────────────────────────────────────────────────────────
   let promptText = $state('');
@@ -30,7 +30,7 @@
   }
 
   async function runCompiler() {
-    if (!promptText.trim() || !apiKey.trim()) return;
+    if (!promptText.trim()) return;
     running = true;
     compiled = null;
     passes = [];
@@ -38,11 +38,21 @@
     activePass = 0;
 
     try {
-      const result = await compile(promptText, apiKey, (pass) => {
-        passes = [...passes, pass];
-        activePass = passes.length - 1;
+      const res = await fetch('/api/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptText, apiKey: apiKey || undefined })
       });
+      if (!res.ok) {
+        const { error } = await res.json();
+        throw new Error(error ?? 'Server error');
+      }
+      const result = await res.json();
+      passes = result.passes;
       compiled = result.compiled;
+      activePass = passes.length - 1;
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       running = false;
     }
@@ -120,12 +130,12 @@
               type="password"
               class="api-input"
               bind:value={apiKey}
-              placeholder="sk-ant-... (optional, for auto-fix)"
+              placeholder="sk-ant-... (overrides .env key)"
             />
             <button
               class="btn btn-primary"
               onclick={runCompiler}
-              disabled={!promptText.trim() || !apiKey.trim() || running}
+              disabled={!promptText.trim() || running}
             >
               {#if running}
                 <span class="spinner"></span> Compiling…

@@ -57,7 +57,7 @@ export async function compile(
   apiKey: string,
   onProgress: (pass: CompilePass) => void
 ): Promise<CompileResult> {
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+  const client = new Anthropic({ apiKey });
 
   const passes: CompilePass[] = [];
   let currentPrompt = initialPrompt;
