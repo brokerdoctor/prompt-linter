@@ -208,9 +208,9 @@
 
             <div class="checks">
               {#each report.checks as check}
-                <div class="check" class:pass={check.pass} class:fail={!check.pass}>
+                <div class="check" class:pass={check.pass} class:fail={!check.pass} data-severity={check.severity}>
                   <div class="check-header">
-                    <span class="check-icon">{check.pass ? '✓' : check.severity === 'error' ? '✗' : '⚠'}</span>
+                    <span class="check-icon">{check.pass ? '✓' : check.severity === 'error' ? '✗' : check.severity === 'warning' ? '⚠' : 'ℹ'}</span>
                     <span class="check-category">{check.category}</span>
                     <span class="check-desc">{check.description}</span>
                   </div>
@@ -541,6 +541,8 @@
   .check-icon { font-size: 0.75rem; width: 14px; flex-shrink: 0; }
   .check.pass .check-icon { color: var(--green); }
   .check.fail .check-icon { color: var(--red); }
+  .check.fail[data-severity="warning"] .check-icon { color: var(--amber); }
+  .check.fail[data-severity="info"] .check-icon { color: var(--text-faint); }
   .check-category { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; color: var(--text-faint); white-space: nowrap; }
   .check-desc { font-size: 0.78rem; color: var(--text-muted); }
 

@@ -1,4 +1,4 @@
-export type Severity = 'error' | 'warning';
+export type Severity = 'error' | 'warning' | 'info';
 
 export interface LintCheck {
   id: string;
@@ -24,6 +24,15 @@ const has = (text: string, ...patterns: RegExp[]) =>
 
 const count = (text: string, pattern: RegExp) =>
   (text.match(pattern) ?? []).length;
+
+// Returns all matches for a pattern
+const matches = (text: string, pattern: RegExp): RegExpMatchArray[] => {
+  const results: RegExpMatchArray[] = [];
+  let m: RegExpExecArray | null;
+  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+  while ((m = re.exec(text)) !== null) results.push(m);
+  return results;
+};
 
 // ── checks ───────────────────────────────────────────────────────────────────
 
@@ -113,21 +122,27 @@ function checkKnowledgeBoundary(text: string): LintCheck {
 }
 
 function checkSequentialSteps(text: string): LintCheck {
-  // Look for numbered steps (1. 2. 3. or 1) 2) 3))
+  // Look for numbered steps (1. 2. 3. or 1) 2) 3)) — require at least two consecutive numbers
+  const stepMatches = matches(text, /^\s*(\d+)[\.\)]\s+/m);
   const numberedSteps = count(text, /^\s*\d+[\.\)]\s+/gm);
-  const pass = numberedSteps >= 3;
+  // Check for actual sequence: two numbers that are consecutive somewhere in the text
+  const hasSequence = stepMatches.some((m) => {
+    const n = parseInt(m[1], 10);
+    return new RegExp(`^\\s*${n + 1}[\\.)]\\ `, 'm').test(text);
+  });
+  const pass = hasSequence && numberedSteps >= 2;
   return {
     id: 'sequential_steps',
     category: 'Control Flow',
-    description: 'Multi-step procedures use numbered steps',
+    description: 'Multi-step procedures use numbered sequential steps',
     severity: 'warning',
     pass,
     finding: pass
-      ? `Found ${numberedSteps} numbered steps.`
+      ? `Found ${numberedSteps} numbered steps in sequence.`
       : numberedSteps === 0
-      ? 'No numbered steps found. Implicit ordering is unreliable.'
-      : 'Fewer than 3 numbered steps — may be insufficient for a procedure.',
-    fix_hint: 'Replace prose descriptions of sequences with explicit numbered steps: "1. [step] 2. [step] 3. [step]"'
+      ? 'No numbered steps found. Implicit ordering is unreliable (Ch 5.1).'
+      : 'Numbered items found but no consecutive sequence detected — may be unordered lists, not procedures.',
+    fix_hint: 'Use explicit sequential numbering for procedures: "1. [step] 2. [step] 3. [step]". See Ch 5.1.'
   };
 }
 
@@ -255,30 +270,210 @@ function checkStateDeclared(text: string): LintCheck {
   };
 }
 
+function checkPriorityOrdering(text: string): LintCheck {
+  // Ch 9.3 — explicit conflict resolution / priority declaration
+  const pass = has(
+    text,
+    /when (?:instructions?|rules?) conflict/i,
+    /priority order/i,
+    /in (?:this|the following) order[:\s]/i,
+    /takes? precedence/i,
+    /override[s]?\b.*\bif\b/i,
+    /\bpriority\b.*[:>]/i,
+    /higher priority/i
+  );
+  return {
+    id: 'priority_ordering',
+    category: 'Guard Clauses',
+    description: 'Conflict resolution / priority ordering declared',
+    severity: 'warning',
+    pass,
+    finding: pass
+      ? 'Priority ordering found.'
+      : 'No priority ordering declared. When instructions conflict the model will guess (Ch 9.3).',
+    fix_hint: 'Add: "When instructions conflict, apply them in this order: [PRIORITY-1] > [PRIORITY-2] > [PRIORITY-3]."'
+  };
+}
+
+function checkNegationRedirect(text: string): LintCheck {
+  // Ch 2.5 — bare "do not X" without a positive redirect is an antipattern
+  const bareNegations = count(text, /\bdo not\b(?!.*\binstead\b)(?!.*\brather\b)/gi)
+    + count(text, /\byou must not\b(?!.*\binstead\b)/gi);
+  const redirects = count(text, /\binstead\b/gi)
+    + count(text, /\brather\b/gi)
+    + count(text, /\bdo [A-Z]/g);  // "Do Y" positive redirect after a negation
+  // Pass if: no bare negations, OR redirects balance them, OR prompt uses NEVER (symbolic anchor already)
+  const nevCount = count(text, /\bNEVER\b/g);
+  const pass = bareNegations === 0 || redirects >= bareNegations || nevCount >= bareNegations;
+  return {
+    id: 'negation_redirect',
+    category: 'Semantics',
+    description: 'Negations paired with positive redirects ("Do Y instead")',
+    severity: 'info',
+    pass,
+    finding: pass
+      ? 'Negations appear adequately paired or anchored.'
+      : `Found ${bareNegations} bare negation(s) without redirect. "Do not X" forces the model to represent and suppress X (Ch 2.5).`,
+    fix_hint: 'Replace "Do not X" with "Do Y instead" — redirect rather than suppress. Or use NEVER for hard guards.'
+  };
+}
+
+function checkPassiveVoice(text: string): LintCheck {
+  // Ch 2.4 — passive constructions reduce behavioral binding reliability
+  const passiveCount = count(text, /\bshould (?:not )?be\b/gi)
+    + count(text, /\bwill be\b/gi)
+    + count(text, /\bmust be\b/gi)
+    + count(text, /\bis (?:required|expected|preferred)\b/gi)
+    + count(text, /\binformation (?:should|must|will) (?:not )?be\b/gi);
+  const activeCount = count(text, /\byou (?:must|will|should|shall)\b/gi)
+    + count(text, /\bNEVER\b/g)
+    + count(text, /\bALWAYS\b/g);
+  // Pass if active constructions dominate or passive is minimal
+  const pass = passiveCount === 0 || activeCount >= passiveCount * 2;
+  return {
+    id: 'passive_voice',
+    category: 'Semantics',
+    description: 'Active voice used for behavioral instructions',
+    severity: 'info',
+    pass,
+    finding: pass
+      ? 'Instructions predominantly use active voice.'
+      : `Found ${passiveCount} passive construction(s) vs ${activeCount} active. Passive voice reduces behavioral binding (Ch 2.4).`,
+    fix_hint: 'Replace "Information should not be revealed" with "You must never reveal". Active + second-person binds more reliably.'
+  };
+}
+
+function checkRoleContract(text: string): LintCheck {
+  // Ch 7.1 — role contract requires all three: Identity, Capability, Boundary
+  const hasIdentity = has(text, /\byou are\b/i, /\byour role\b/i, /\bact as\b/i, /\byou(?:'re| are) a(?:n)?\b/i);
+  const hasCapability = has(text, /\byou (?:can|will|handle|help|assist)\b/i, /\bresponsible for\b/i, /\byour (?:job|task|purpose)\b/i);
+  const hasBoundary = has(text, /\bNEVER\b/, /\byou must not\b/i, /\bdo not\b/i, /\bout of scope\b/i, /\bwill not\b/i);
+  const triadCount = [hasIdentity, hasCapability, hasBoundary].filter(Boolean).length;
+  const pass = triadCount === 3;
+  return {
+    id: 'role_contract',
+    category: 'Identity & Contract',
+    description: 'Role contract complete: Identity + Capability + Boundary',
+    severity: 'error',
+    pass,
+    finding: pass
+      ? 'Role contract triad (Identity, Capability, Boundary) complete.'
+      : `Role contract incomplete — missing: ${[!hasIdentity && 'Identity', !hasCapability && 'Capability', !hasBoundary && 'Boundary'].filter(Boolean).join(', ')}. (Ch 7.1)`,
+    fix_hint: 'A complete role contract needs all three: "You are [X]" (Identity) + "You will [Y]" (Capability) + "You must never [Z]" (Boundary).'
+  };
+}
+
+function checkFailureContract(text: string): LintCheck {
+  // Ch 14.3 — graceful degradation / failure fallback declared
+  const pass = has(
+    text,
+    /if (?:you (?:don't|do not|cannot|can't)|(?:the|an?) (?:request|question|input) is) .{0,60}[,;] (?:you should|respond|say|tell|ask|clarify)/i,
+    /\bif (?:unclear|unsure|uncertain|ambiguous)\b/i,
+    /\bfallback\b/i,
+    /\bgraceful(?:ly)? degrad/i,
+    /\bif (?:you (?:don't|do not) know|you(?:'re| are) (?:not sure|unsure))\b/i,
+    /\bcannot (?:answer|help|assist)\b.*\b(?:instead|then|say|redirect)\b/i,
+    /\bwhen (?:you (?:don't|cannot)|the (?:request|question))\b.{0,60}\b(?:respond|say|do)\b/i
+  );
+  return {
+    id: 'failure_contract',
+    category: 'Error Handling',
+    description: 'Failure / fallback behavior declared',
+    severity: 'warning',
+    pass,
+    finding: pass
+      ? 'Failure/fallback contract found.'
+      : 'No fallback behavior defined. When the agent cannot fulfill a request, behavior is undefined (Ch 14.3).',
+    fix_hint: 'Add: "If you cannot answer, [FALLBACK]. If [FALLBACK] also fails, [TERMINAL BEHAVIOR]." (Failure Contract pattern)'
+  };
+}
+
+function checkStateScope(text: string): LintCheck {
+  // Ch 4.2 — state scope (session vs turn) must be declared when state is tracked
+  const hasStateTracking = has(
+    text,
+    /\btrack\b/i,
+    /\bremember\b/i,
+    /\bmaintain\b/i,
+    /\bkeep track\b/i,
+    /\bstate\b/i,
+    /\bcontext\b/i
+  );
+  if (!hasStateTracking) {
+    // No state to scope — not applicable, pass trivially
+    return {
+      id: 'state_scope',
+      category: 'State',
+      description: 'State scope declared (session vs. turn)',
+      severity: 'info',
+      pass: true,
+      finding: 'No stateful tracking detected — scope check not applicable.',
+      fix_hint: 'When tracking state, declare scope: "Track [X] for this session" or "Reset [X] each turn."'
+    };
+  }
+  const pass = has(
+    text,
+    /\bthis (?:session|conversation|interaction)\b/i,
+    /\beach turn\b/i,
+    /\bper turn\b/i,
+    /\bpersist(?:ent|s|ed)?\b/i,
+    /\bsession[- ](?:level|wide|scoped)\b/i,
+    /\breset\b.*\b(?:each|every|per) (?:turn|message|request)\b/i,
+    /\bthroughout (?:this|the) (?:session|conversation|interaction)\b/i
+  );
+  return {
+    id: 'state_scope',
+    category: 'State',
+    description: 'State scope declared (session vs. turn)',
+    severity: 'warning',
+    pass,
+    finding: pass
+      ? 'State scope (session/turn) declared.'
+      : 'State tracking found but scope not declared. Agent may not know when to reset or persist state (Ch 4.2).',
+    fix_hint: 'Declare scope explicitly: "Track [X] throughout this session" or "Reset [X] on each new turn."'
+  };
+}
+
 // ── runner ───────────────────────────────────────────────────────────────────
 
 const ALL_CHECKS = [
+  // Identity & Contract
   checkIdentity,
   checkCapabilityBoundary,
   checkConstraintBoundary,
   checkKnowledgeBoundary,
+  checkRoleContract,
+  // Semantics
+  checkNegationRedirect,
+  checkPassiveVoice,
+  // Control Flow
   checkSequentialSteps,
   checkBlockingGates,
+  // Guard Clauses
   checkGuardClauses,
-  checkOutputContract,
+  checkPriorityOrdering,
+  // State
+  checkStateDeclared,
+  checkStateScope,
+  // Event Handling
   checkEventHandlers,
-  checkSecurityProtocol,
-  checkStateDeclared
+  // Error Handling
+  checkFailureContract,
+  // Output
+  checkOutputContract,
+  // Security
+  checkSecurityProtocol
 ];
 
 export function lint(prompt: string): LintReport {
   const checks = ALL_CHECKS.map((fn) => fn(prompt));
   const passed = checks.filter((c) => c.pass).length;
   const failed = checks.length - passed;
-  // Errors count double toward score penalty
+  // Weighted penalty: errors=10pts, warnings=5pts, info=2pts
   const errorFails = checks.filter((c) => !c.pass && c.severity === 'error').length;
   const warnFails = checks.filter((c) => !c.pass && c.severity === 'warning').length;
-  const penalty = errorFails * 12 + warnFails * 6;
+  const infoFails = checks.filter((c) => !c.pass && c.severity === 'info').length;
+  const penalty = errorFails * 10 + warnFails * 5 + infoFails * 2;
   const score = Math.max(0, 100 - penalty);
   return { score, passed, failed, checks };
 }
