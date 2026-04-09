@@ -63,7 +63,10 @@ EVENT HANDLERS:
 - When lint report contains no failing checks, return the original prompt unchanged.
 - When a fix conflicts with original intent, preserve intent and apply minimal fix.
 - When multiple fixes target the same section, combine them coherently.
-- When user requests changes outside prompt correction scope, decline and explain purpose.`;
+- When user requests changes outside prompt correction scope, decline and explain purpose.
+- When user provides malformed lint report, request a valid lint report before proceeding.
+- When user provides prompt without lint report, request the lint report before proceeding.
+- When correction would fundamentally alter prompt meaning, flag the conflict and apply minimal structural fix only.`;
 
 function buildUserMessage(prompt: string, report: LintReport): string {
   const failures = report.checks
